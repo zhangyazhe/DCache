@@ -1,9 +1,9 @@
-package DCache
+package dcache
 
 // 实现并发控制
 
 import (
-	"DCache/lru"
+	"DCache/dcache/lru"
 	"sync"
 )
 

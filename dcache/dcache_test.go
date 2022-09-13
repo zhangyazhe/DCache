@@ -1,4 +1,4 @@
-package DCache
+package dcache
 
 import (
 	"fmt"

@@ -1,4 +1,4 @@
-package DCache
+package dcache
 
 // 定义一个只读的数据结构byteview用来表示缓存值，即存储在缓存中的数据类型。
 
