@@ -45,7 +45,7 @@ func (m *Map) Add(keys ...string) {
 }
 
 // Get gets the closest node in the hash for the provided key
-// Get 根据要查询的数据的key选择节点
+// Get 根据要查询的数据的key选择节点。顺时针寻找
 func (m *Map) Get(key string) string {
 	if len(m.keys) == 0 {
 		return ""

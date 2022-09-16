@@ -1,15 +1,22 @@
 package dcache
 
 import (
+	"DCache/dcache/consistenthash"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
+	"sync"
 )
 
 // 提供被其他节点访问的能力（基于http）
 
-const defaultBasePath = "/_dcache/"
+const (
+	defaultBasePath = "/_dcache/"
+	defaultReplicas = 50
+)
 
 // 承载节点间HTTP通信的核心数据结构
 type HTTPPool struct {
@@ -17,7 +24,10 @@ type HTTPPool struct {
 	// 作为节点间通讯地址的前缀，默认是 /_dcache/，那么 http://example.com/_dcache/ 开头的请求，
 	// 就用于节点间的访问。因为一个主机上还可能承载其他的服务，加一段 Path 是一个好习惯。
 	// 比如，大部分网站的 API 接口，一般以 /api 作为前缀。
-	basePath string
+	basePath    string
+	mu          sync.Mutex
+	peers       *consistenthash.Map    // 用于根据具体的key选择节点
+	httpGetters map[string]*httpGetter // 映射远程节点与对应的httpGetter
 }
 
 func NewHTTPPool(self string) *HTTPPool {
@@ -67,4 +77,57 @@ func (p *HTTPPool) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+}
+
+// httpGetter 为HTTP客户端类
+type httpGetter struct {
+	baseURL string
+}
+
+func (h *httpGetter) Get(group string, key string) ([]byte, error) {
+	u := fmt.Sprintf(
+		"%v%v/%v",
+		h.baseURL,
+		url.QueryEscape(group),
+		url.QueryEscape(key),
+	)
+	res, err := http.Get(u)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("server returned: %v", res.Status)
+	}
+	bytes, err := io.ReadAll(res.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading response body: %v", err)
+	}
+	return bytes, nil
+}
+
+// Set updates the pool's list of peers.
+// Set 方法实例化了一致性哈希算法，并且添加了传入的节点，并为每个节点创建了一个HTTP客户端 httpGetter
+func (p *HTTPPool) Set(peers ...string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.peers = consistenthash.New(defaultReplicas, nil)
+	p.peers.Add(peers...)
+	p.httpGetters = make(map[string]*httpGetter, len(peers))
+	for _, peer := range peers {
+		p.httpGetters[peer] = &httpGetter{baseURL: peer + p.basePath}
+	}
+}
+
+// PickPeer picks a peer according to key
+// PickPeer 包装了一致性哈希算法的 Get 方法，根据具体的key选择节点，返回节点对应的HTTP客户端
+// 返回true意味着将要从remote节点上获取数据。返回false意味着将要从本地获取数据
+func (p *HTTPPool) PickPeer(key string) (PeerGetter, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if peer := p.peers.Get(key); peer != "" && peer != p.self {
+		p.Log("Pick peer %s", peer)
+		return p.httpGetters[peer], true
+	}
+	return nil, false
 }

@@ -15,6 +15,12 @@ import (
 //                            |  否
 //                            |-----> 调用`回调函数`，获取值并添加到缓存 --> 返回缓存值 ⑶
 //
+// 进一步细化流程(2):
+// 使用一致性哈希选择节点        是                                    是
+//    |-----> 是否是远程节点 -----> HTTP 客户端访问远程节点 --> 成功？-----> 服务端返回返回值
+//                    |  否                                    ↓  否
+//                    |----------------------------> 回退到本地节点处理
+//
 // 如果缓存不存在，应从数据源（文件，数据库等）获取数据并添加到缓存中。DCache 是否应该支持多种数据源的配置呢？
 // 不应该，一是数据源的种类太多，没办法一一实现；二是扩展性不好。如何从源头获取数据，应该是用户决定的事情，我们就把这件事交给用户好了。
 // 因此，我们设计了一个回调函数(callback)，在缓存不存在时，调用这个函数，得到源数据。
@@ -45,6 +51,7 @@ type Group struct {
 	name      string
 	getter    Getter
 	mainCache cache
+	peers     PeerPicker
 }
 
 var (
@@ -77,20 +84,34 @@ func GetGroup(name string) *Group {
 }
 
 // Get value for a key from cache
+// Get 是最核心的函数，实现了上面的(1)(2)(3)。这里是整个分布式缓存系统的入口
 func (g *Group) Get(key string) (ByteView, error) {
 	if key == "" {
 		return ByteView{}, fmt.Errorf("key is required")
 	}
-
+	// 检查是否被缓存
 	if v, ok := g.mainCache.get(key); ok {
+		// 发现本地有缓存，直接返回
 		log.Println("[GeeCache] hit")
 		return v, nil
 	}
-
+	// 本地没有缓存，尝试从数据库读取数据或者从其他缓存节点读取
 	return g.load(key)
 }
 
+// load 先判断是否可以从其他节点获取数据，如果可以则尝试获取。如果不可以，则尝试从本地获取
+// load 使用 PickPeer() 方法选择节点，若非本机节点，则调用 getFromPeer() 从远程获取。若是本机节点或失败，则回退到 getLocally()
 func (g *Group) load(key string) (value ByteView, err error) {
+	if g.peers != nil {
+		// 判断是否可以从其他缓存节点获取缓存
+		if peer, ok := g.peers.PickPeer(key); ok {
+			value, err := g.GetFromPeer(peer, key)
+			if err != nil {
+				log.Println("[dcache] Failed to get from peer, try to get locally.", err)
+			}
+			return value, nil
+		}
+	}
 	return g.getLocally(key)
 }
 
@@ -98,13 +119,31 @@ func (g *Group) getLocally(key string) (ByteView, error) {
 	bytes, err := g.getter.Get(key)
 	if err != nil {
 		return ByteView{}, err
-
 	}
 	value := ByteView{b: cloneBytes(bytes)}
 	g.populateCache(key, value)
 	return value, nil
 }
 
+// populateCache 将 key, value 添加到缓存
 func (g *Group) populateCache(key string, value ByteView) {
 	g.mainCache.add(key, value)
+}
+
+// RegisterPeers registers a PeerPicker for choosing remote peer
+// RegisterPeers 将实现了 PeerPicker 接口的 HTTPPool 注入到 Group 中
+func (g *Group) RegisterPeers(peers PeerPicker) {
+	if g.peers != nil {
+		panic("RegisterPeerPicker called more than once")
+	}
+	g.peers = peers
+}
+
+// GetFromPeer 使用实现了 PeerGetter 接口的 httpGetter 从访问远程节点，获取缓存值
+func (g *Group) GetFromPeer(peer PeerGetter, key string) (ByteView, error) {
+	bytes, err := peer.Get(g.name, key)
+	if err != nil {
+		return ByteView{b: bytes}, err
+	}
+	return ByteView{b: bytes}, nil
 }
