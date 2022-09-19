@@ -1,6 +1,7 @@
 package dcache
 
 import (
+	"DCache/dcache/singleflight"
 	"fmt"
 	"log"
 	"sync"
@@ -52,6 +53,7 @@ type Group struct {
 	getter    Getter
 	mainCache cache
 	peers     PeerPicker
+	sf        *singleflight.Group
 }
 
 var (
@@ -69,6 +71,7 @@ func NewGroup(name string, cacheBytes int64, getter Getter) *Group {
 		name:      name,
 		getter:    getter,
 		mainCache: cache{cacheBytes: cacheBytes},
+		sf:        &singleflight.Group{},
 	}
 	groups[name] = g
 	return g
@@ -105,22 +108,27 @@ func (g *Group) load(key string) (value ByteView, err error) {
 	if g.peers != nil {
 		// 判断是否可以从其他缓存节点获取缓存
 		if peer, ok := g.peers.PickPeer(key); ok {
-			value, err := g.GetFromPeer(peer, key)
-			if err != nil {
-				log.Println("[dcache] Failed to get from peer, try to get locally.", err)
-			}
-			return value, nil
+			ret, err := g.sf.Do(key, func() (interface{}, error) {
+				value, err := g.GetFromPeer(peer, key)
+				if err != nil {
+					log.Println("[dcache] Failed to get from peer, try to get locally.", err)
+				}
+				return value, nil
+			})
+			return ret.(ByteView), err
 		}
 	}
 	return g.getLocally(key)
 }
 
 func (g *Group) getLocally(key string) (ByteView, error) {
-	bytes, err := g.getter.Get(key)
+	bytes, err := g.sf.Do(key, func() (interface{}, error) {
+		return g.getter.Get(key)
+	})
 	if err != nil {
 		return ByteView{}, err
 	}
-	value := ByteView{b: cloneBytes(bytes)}
+	value := ByteView{b: cloneBytes(bytes.([]byte))}
 	g.populateCache(key, value)
 	return value, nil
 }

@@ -75,5 +75,5 @@ func main() {
 	if api {
 		go startAPIServer(apiAddr, g)
 	}
-	startCacheServer(addrMap[port], []string(addrs), g)
+	startCacheServer(addrMap[port], addrs, g)
 }
