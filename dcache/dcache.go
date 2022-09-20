@@ -1,6 +1,7 @@
 package dcache
 
 import (
+	pb "DCache/dcache/dcachepb"
 	"DCache/dcache/singleflight"
 	"fmt"
 	"log"
@@ -149,9 +150,14 @@ func (g *Group) RegisterPeers(peers PeerPicker) {
 
 // GetFromPeer 使用实现了 PeerGetter 接口的 httpGetter 从访问远程节点，获取缓存值
 func (g *Group) GetFromPeer(peer PeerGetter, key string) (ByteView, error) {
-	bytes, err := peer.Get(g.name, key)
-	if err != nil {
-		return ByteView{b: bytes}, err
+	req := &pb.Request{
+		Group: g.name,
+		Key:   key,
 	}
-	return ByteView{b: bytes}, nil
+	res := &pb.Response{}
+	err := peer.Get(req, res)
+	if err != nil {
+		return ByteView{}, err
+	}
+	return ByteView{res.Value}, nil
 }

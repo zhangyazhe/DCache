@@ -45,7 +45,7 @@ func startAPIServer(apiAddr string, g *dcache.Group) {
 				return
 			}
 			w.Header().Set("Content-Type", "application/octet-stream")
-			w.Write(view.ByteSlice())
+			_, err = w.Write(view.ByteSlice())
 		}))
 	log.Println("fontend server is running at", apiAddr)
 	log.Fatal(http.ListenAndServe(apiAddr[7:], nil))
